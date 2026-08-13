@@ -1,0 +1,5 @@
+yt-dlp
+psycopg2-binary
+pytest
+ruff
+black
