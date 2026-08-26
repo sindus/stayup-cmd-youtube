@@ -3,6 +3,8 @@
 [![CI](https://github.com/stayup-app/stayup-cmd-youtube/actions/workflows/ci.yml/badge.svg)](https://github.com/stayup-app/stayup-cmd-youtube/actions/workflows/ci.yml)
 [![Daily YouTube check](https://github.com/stayup-app/stayup-cmd-youtube/actions/workflows/daily.yml/badge.svg)](https://github.com/stayup-app/stayup-cmd-youtube/actions/workflows/daily.yml)
 
+**Website:** https://stayup-ui.vercel.app
+
 Monitors YouTube channels and stores the latest video in a PostgreSQL database.
 
 For each tracked profile, the script fetches the most recent video using yt-dlp. A new entry is only stored when the video has changed since the last run.
