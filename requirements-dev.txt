@@ -1,5 +1,5 @@
 yt-dlp
-psycopg2-binary
+requests
 pytest
 ruff
 black
