@@ -1,57 +1,159 @@
-"""Unit tests — no external dependencies (DB, network)."""
+"""Unit tests — no external dependencies. stayup-api itself is mocked
+(unittest.mock.patch on `requests.request`); its actual behavior is covered
+by stayup-api's own test suite. yt-dlp is mocked too."""
 
 import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from latest_videos import (
     DISPLAY_TEMPLATE,
+    add_source,
     cleanup_old_entries,
     fetch_video_ids,
     fetch_video_metadata,
-    get_latest_entry,
-    init_db,
+    get_latest_version,
+    get_sources,
+    process_repository,
+    register_provider,
     save_entry,
     save_error,
-    upsert_repository,
 )
 
 # ---------------------------------------------------------------------------
-# DB helpers
+# api_request helpers
 # ---------------------------------------------------------------------------
 
 
-def make_conn_mock():
-    conn = MagicMock()
-    cursor = MagicMock()
-    conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
-    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-    return conn, cursor
+def mock_response(json_body=None, status=200):
+    response = MagicMock()
+    response.status_code = status
+    response.content = b"{}" if json_body is not None else b""
+    response.json.return_value = json_body
+    response.raise_for_status.return_value = None
+    return response
 
 
-class TestInitDb:
-    def test_runs_ddl_then_registers_provider_and_commits(self):
-        conn, cursor = make_conn_mock()
-        init_db(conn)
-        assert cursor.execute.call_count == 2  # DDL, then registry upsert
-        conn.commit.assert_called_once()
+@patch("latest_videos.API_KEY", "test-key")
+class TestRegisterProvider:
+    @patch("latest_videos.requests.request")
+    def test_posts_display_name_sort_order_and_template(self, mock_request):
+        mock_request.return_value = mock_response()
+        register_provider()
+        method, url = mock_request.call_args[0]
+        assert method == "POST"
+        assert url.endswith("/connector-api/youtube/register")
+        body = mock_request.call_args.kwargs["json"]
+        assert body["displayName"] == "YouTube"
+        assert body["sortOrder"] == 20
+        assert body["template"] == DISPLAY_TEMPLATE
 
-    def test_ddl_creates_registry_with_template_column(self):
-        conn, cursor = make_conn_mock()
-        init_db(conn)
-        ddl = cursor.execute.call_args_list[0].args[0]
-        assert "CREATE TABLE IF NOT EXISTS provider_registry" in ddl
-        assert "ADD COLUMN IF NOT EXISTS template" in ddl
 
-    def test_registers_provider_name_and_display_template(self):
-        conn, cursor = make_conn_mock()
-        init_db(conn)
-        sql, params = cursor.execute.call_args_list[1].args
-        assert "INSERT INTO provider_registry" in sql
-        assert "template" in sql
-        name, display, sort_order, template_json = params
-        assert (name, display, sort_order) == ("youtube", "YouTube", 20)
-        assert json.loads(template_json) == DISPLAY_TEMPLATE
+class TestApiRequestWithoutKey:
+    @patch("latest_videos.API_KEY", None)
+    def test_raises_when_no_api_key_is_configured(self):
+        with pytest.raises(RuntimeError, match="STAYUP_API_KEY"):
+            register_provider()
+
+
+@patch("latest_videos.API_KEY", "test-key")
+class TestAddSource:
+    @patch("latest_videos.requests.request")
+    def test_posts_the_url_and_returns_the_id(self, mock_request):
+        mock_request.return_value = mock_response({"id": 7, "url": "https://www.youtube.com/@melvynxdev"})
+        result = add_source("https://www.youtube.com/@melvynxdev")
+        assert result == 7
+        method, url = mock_request.call_args[0]
+        assert method == "POST"
+        assert url.endswith("/connector-api/youtube/sources")
+
+
+@patch("latest_videos.API_KEY", "test-key")
+class TestGetSources:
+    @patch("latest_videos.requests.request")
+    def test_returns_id_url_config_tuples(self, mock_request):
+        mock_request.return_value = mock_response(
+            {"sources": [{"id": 1, "url": "https://www.youtube.com/@a", "config": {"max_iterations": 3}}]}
+        )
+        assert get_sources() == [(1, "https://www.youtube.com/@a", {"max_iterations": 3})]
+
+
+@patch("latest_videos.API_KEY", "test-key")
+class TestGetLatestVersion:
+    @patch("latest_videos.requests.request")
+    def test_returns_none_on_first_run(self, mock_request):
+        mock_request.return_value = mock_response({"version": None})
+        assert get_latest_version(1) is None
+
+    @patch("latest_videos.requests.request")
+    def test_returns_the_version(self, mock_request):
+        mock_request.return_value = mock_response({"version": "dQw4w9WgXcQ"})
+        assert get_latest_version(1) == "dQw4w9WgXcQ"
+        url = mock_request.call_args[0][1]
+        assert url.endswith("/connector-api/youtube/sources/1/state")
+
+
+@patch("latest_videos.API_KEY", "test-key")
+class TestSaveEntry:
+    @patch("latest_videos.requests.request")
+    def test_posts_a_single_item_with_version(self, mock_request):
+        mock_request.return_value = mock_response({"success": True})
+        executed_at = datetime.now(tz=timezone.utc)
+        save_entry(1, "vid123", '{"title": "test"}', None, executed_at)
+        method, url = mock_request.call_args[0]
+        assert method == "POST"
+        assert url.endswith("/connector-api/youtube/items")
+        body = mock_request.call_args.kwargs["json"]
+        assert len(body["items"]) == 1
+        item = body["items"][0]
+        assert item["repositoryId"] == 1
+        assert item["version"] == "vid123"
+        assert item["success"] is True
+
+    @patch("latest_videos.requests.request")
+    def test_accepts_a_none_version(self, mock_request):
+        mock_request.return_value = mock_response({"success": True})
+        save_entry(1, None, "{}", None, datetime.now(tz=timezone.utc))
+        assert mock_request.call_args.kwargs["json"]["items"][0]["version"] is None
+
+    @patch("latest_videos.requests.request")
+    def test_serializes_the_video_datetime(self, mock_request):
+        mock_request.return_value = mock_response({"success": True})
+        video_date = datetime(2024, 6, 15, tzinfo=timezone.utc)
+        save_entry(1, "abc", "{}", video_date, datetime.now(tz=timezone.utc))
+        item = mock_request.call_args.kwargs["json"]["items"][0]
+        assert item["datetime"] == video_date.isoformat()
+
+
+@patch("latest_videos.API_KEY", "test-key")
+class TestSaveError:
+    @patch("latest_videos.requests.request")
+    def test_posts_the_error(self, mock_request):
+        mock_request.return_value = mock_response({"success": True})
+        executed_at = datetime.now(tz=timezone.utc)
+        save_error(5, "something went wrong", executed_at)
+        body = mock_request.call_args.kwargs["json"]
+        assert body == {"repositoryId": 5, "error": "something went wrong", "executedAt": executed_at.isoformat()}
+
+    @patch("latest_videos.requests.request")
+    def test_accepts_none_repository_id(self, mock_request):
+        mock_request.return_value = mock_response({"success": True})
+        save_error(None, "error", datetime.now(tz=timezone.utc))
+        assert mock_request.call_args.kwargs["json"]["repositoryId"] is None
+
+
+@patch("latest_videos.API_KEY", "test-key")
+class TestCleanupOldEntries:
+    @patch("latest_videos.requests.request")
+    def test_sends_retention_days_as_a_query_param(self, mock_request):
+        mock_request.return_value = mock_response({"success": True})
+        cleanup_old_entries(7, 30)
+        method, url = mock_request.call_args[0]
+        assert method == "DELETE"
+        assert url.endswith("/connector-api/youtube/sources/7/old-items")
+        assert mock_request.call_args.kwargs["params"] == {"retentionDays": 30}
 
 
 class TestDisplayTemplate:
@@ -59,8 +161,6 @@ class TestDisplayTemplate:
         assert json.loads(json.dumps(DISPLAY_TEMPLATE)) == DISPLAY_TEMPLATE
 
     def test_ships_a_self_describing_icon(self):
-        # Le connecteur fournit son icône (tracé SVG teintable), pas une clé du
-        # jeu intégré des apps : un nouveau connecteur s'affiche sans toucher au code.
         icon = DISPLAY_TEMPLATE["display"]["icon"]
         assert isinstance(icon, dict)
         assert icon["paths"]
@@ -71,107 +171,6 @@ class TestDisplayTemplate:
         assert DISPLAY_TEMPLATE["detail"]["mode"] == "media"
         assert DISPLAY_TEMPLATE["detail"]["embedUrl"].endswith("/embed/{$row.version}")
         assert DISPLAY_TEMPLATE["list"]["layout"] == "media"
-
-
-class TestUpsertRepository:
-    def test_returns_id(self):
-        conn, cursor = make_conn_mock()
-        cursor.fetchone.return_value = (7,)
-        result = upsert_repository(conn, "https://www.youtube.com/@melvynxdev")
-        assert result == 7
-        sql = cursor.execute.call_args[0][0]
-        assert "INSERT INTO repository" in sql
-        assert "ON CONFLICT" in sql
-
-    def test_passes_url_as_parameter(self):
-        conn, cursor = make_conn_mock()
-        cursor.fetchone.return_value = (1,)
-        upsert_repository(conn, "https://www.youtube.com/@melvynxdev")
-        params = cursor.execute.call_args[0][1]
-        assert params == ("https://www.youtube.com/@melvynxdev",)
-
-    def test_inserts_type_youtube(self):
-        conn, cursor = make_conn_mock()
-        cursor.fetchone.return_value = (1,)
-        upsert_repository(conn, "https://www.youtube.com/@melvynxdev")
-        sql = cursor.execute.call_args[0][0]
-        assert "youtube" in sql
-
-
-class TestGetLatestEntry:
-    def test_returns_none_when_no_row(self):
-        conn, cursor = make_conn_mock()
-        cursor.fetchone.return_value = None
-        version, content = get_latest_entry(conn, 1)
-        assert version is None
-        assert content is None
-
-    def test_returns_tuple_when_row_exists(self):
-        conn, cursor = make_conn_mock()
-        cursor.fetchone.return_value = ("dQw4w9WgXcQ", '{"title": "My Video"}')
-        version, content = get_latest_entry(conn, 1)
-        assert version == "dQw4w9WgXcQ"
-        assert content == '{"title": "My Video"}'
-
-    def test_queries_by_repository_id(self):
-        conn, cursor = make_conn_mock()
-        cursor.fetchone.return_value = None
-        get_latest_entry(conn, 42)
-        params = cursor.execute.call_args[0][1]
-        assert params == (42,)
-
-
-class TestSaveEntry:
-    def test_inserts_with_version_and_commits(self):
-        conn, cursor = make_conn_mock()
-        executed_at = datetime.now(tz=timezone.utc)
-        save_entry(conn, 1, "vid123", '{"title": "test"}', None, executed_at)
-        cursor.execute.assert_called_once()
-        conn.commit.assert_called_once()
-        params = cursor.execute.call_args[0][1]
-        assert params[0] == 1  # repository_id
-        assert params[1] == "vid123"  # version
-        assert params[4] == executed_at
-
-    def test_success_flag_in_sql(self):
-        conn, cursor = make_conn_mock()
-        save_entry(conn, 1, None, "{}", None, datetime.now(tz=timezone.utc))
-        sql = cursor.execute.call_args[0][0]
-        assert "TRUE" in sql
-
-
-class TestSaveError:
-    def test_inserts_error_and_commits(self):
-        conn, cursor = make_conn_mock()
-        executed_at = datetime.now(tz=timezone.utc)
-        save_error(conn, 5, "something went wrong", executed_at)
-        cursor.execute.assert_called_once()
-        conn.commit.assert_called_once()
-        params = cursor.execute.call_args[0][1]
-        assert params == (5, "something went wrong", executed_at)
-
-    def test_accepts_none_repository_id(self):
-        conn, cursor = make_conn_mock()
-        save_error(conn, None, "error", datetime.now(tz=timezone.utc))
-        params = cursor.execute.call_args[0][1]
-        assert params[0] is None
-
-
-class TestCleanupOldEntries:
-    def test_executes_delete_and_commits(self):
-        conn, cursor = make_conn_mock()
-        cleanup_old_entries(conn, 1, 15)
-        cursor.execute.assert_called_once()
-        conn.commit.assert_called_once()
-        sql = cursor.execute.call_args[0][0]
-        assert "DELETE FROM connector_youtube" in sql
-        assert "executed_at" in sql
-
-    def test_uses_repository_id_and_retention_days(self):
-        conn, cursor = make_conn_mock()
-        cleanup_old_entries(conn, 7, 30)
-        params = cursor.execute.call_args[0][1]
-        assert params == (7, 30)
 
 
 # ---------------------------------------------------------------------------
@@ -271,3 +270,79 @@ class TestFetchVideoMetadata:
         upload_date, summary = fetch_video_metadata("xyz")
         assert upload_date == datetime(2024, 6, 15, tzinfo=timezone.utc)
         assert summary == "A great video"
+
+
+# ---------------------------------------------------------------------------
+# process_repository — end to end, stayup-api and yt-dlp mocked
+# ---------------------------------------------------------------------------
+
+
+def make_entry(vid_id, title=""):
+    return {"video_id": vid_id, "url": f"https://www.youtube.com/watch?v={vid_id}", "title": title}
+
+
+@patch("latest_videos.API_KEY", "test-key")
+class TestProcessRepository:
+    @patch("latest_videos.save_error")
+    @patch("latest_videos.save_entry")
+    @patch("latest_videos.get_latest_version")
+    @patch("latest_videos.fetch_video_metadata")
+    @patch("latest_videos.fetch_video_ids")
+    def test_first_run_stores_only_latest(self, mock_ids, mock_meta, mock_get_latest, mock_save, mock_save_error):
+        mock_ids.return_value = [make_entry("dQw4w9WgXcQ", "Never Gonna Give You Up")]
+        mock_meta.return_value = (datetime(2009, 2, 25, tzinfo=timezone.utc), None)
+        mock_get_latest.return_value = None
+        executed_at = datetime.now(tz=timezone.utc)
+        process_repository(1, "https://www.youtube.com/@rick", executed_at, {})
+
+        mock_save.assert_called_once()
+        repository_id, version, content, video_datetime, _ = mock_save.call_args[0]
+        assert version == "dQw4w9WgXcQ"
+        assert json.loads(content)["title"] == "Never Gonna Give You Up"
+        mock_save_error.assert_not_called()
+
+    @patch("latest_videos.save_error")
+    @patch("latest_videos.save_entry")
+    @patch("latest_videos.get_latest_version")
+    @patch("latest_videos.fetch_video_metadata")
+    @patch("latest_videos.fetch_video_ids")
+    def test_no_insert_when_same_video(self, mock_ids, mock_meta, mock_get_latest, mock_save, _err):
+        mock_ids.return_value = [make_entry("vid001", "My Video")]
+        mock_meta.return_value = (None, None)
+        mock_get_latest.return_value = "vid001"
+        process_repository(1, "https://www.youtube.com/@channel", datetime.now(tz=timezone.utc), {})
+        mock_save.assert_not_called()
+
+    @patch("latest_videos.save_error")
+    @patch("latest_videos.save_entry")
+    @patch("latest_videos.get_latest_version")
+    @patch("latest_videos.fetch_video_metadata")
+    @patch("latest_videos.fetch_video_ids")
+    def test_iterates_new_videos_until_the_known_one(self, mock_ids, mock_meta, mock_get_latest, mock_save, _err):
+        mock_ids.return_value = [
+            make_entry("vid004"),
+            make_entry("vid003"),
+            make_entry("vid002"),
+            make_entry("vid001"),
+        ]
+        mock_meta.return_value = (None, None)
+        mock_get_latest.return_value = "vid001"
+        process_repository(1, "https://www.youtube.com/@channel", datetime.now(tz=timezone.utc), {})
+
+        saved_versions = [call.args[1] for call in mock_save.call_args_list]
+        assert saved_versions == ["vid004", "vid003", "vid002"]
+
+    @patch("latest_videos.save_error")
+    @patch("latest_videos.fetch_video_ids")
+    def test_logs_error_on_failure(self, mock_ids, mock_save_error):
+        mock_ids.side_effect = Exception("yt-dlp network error")
+        executed_at = datetime.now(tz=timezone.utc)
+        process_repository(1, "https://www.youtube.com/@channel", executed_at, {})
+        mock_save_error.assert_called_once_with(1, "yt-dlp network error", executed_at)
+
+    @patch("latest_videos.save_error")
+    @patch("latest_videos.fetch_video_ids")
+    def test_logs_error_when_no_video(self, mock_ids, mock_save_error):
+        mock_ids.return_value = []
+        process_repository(1, "https://www.youtube.com/@empty", datetime.now(tz=timezone.utc), {})
+        mock_save_error.assert_called_once()

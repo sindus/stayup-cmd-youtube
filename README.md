@@ -5,42 +5,29 @@
 
 **Website:** https://stayup-ui.vercel.app
 
-Monitors YouTube channels and stores the latest video in a PostgreSQL database.
+Monitors YouTube channels and stores the latest videos via [stayup-api](https://github.com/stayup-app/stayup-api) — this script never touches a database directly, it only calls `stayup-api`'s `/connector-api/youtube/*` endpoints.
 
-For each tracked profile, the script fetches the most recent video using yt-dlp. A new entry is only stored when the video has changed since the last run.
+For each tracked channel, the script fetches the most recent videos using yt-dlp. A new entry is only stored when the video has changed since the last run.
 
 ## Requirements
 
-- [Docker](https://www.docker.com/) and Docker Compose
+- Python 3.13, or [Docker](https://www.docker.com/)
+- A `stayup-api` instance (the public one, or your own — see [self-hosting-and-providers.md](https://github.com/stayup-app/stayup-api/blob/main/docs/self-hosting-and-providers.md))
+- An API key for the `youtube` provider, created from that instance's admin panel (Connector keys → New key, provider `youtube`). The key is shown once — copy it right away.
 
 ## Setup
 
 ```bash
+git clone https://github.com/stayup-app/stayup-cmd-youtube.git
+cd stayup-cmd-youtube
 cp .env.example .env
 ```
 
-Open `.env` and configure your database connection.
+Open `.env` and set `STAYUP_API_URL` (your `stayup-api` instance) and `STAYUP_API_KEY` (the key you created for `youtube`).
 
-### Option A — Local database (Docker)
-
-The default values in `.env` work out of the box with the bundled `db` service. No changes needed.
-
-### Option B — External database (Render, Railway, etc.)
-
-Set the full connection URL in `.env`:
-
-```env
-DATABASE_URL=postgresql://user:password@host:5432/dbname
-```
-
-> **Note:** Tables are created automatically on the first run.
+> **Note:** the provider registers itself automatically on every run — nothing to create by hand beyond the key.
 
 ## Usage
-
-**Start the database:**
-```bash
-docker compose up db -d
-```
 
 **Track a YouTube channel:**
 ```bash
@@ -53,19 +40,17 @@ docker compose run --rm latest_videos --add https://www.youtube.com/@fireship
 docker compose run --rm latest_videos
 ```
 
-**Browse the database (pgAdmin):**
+Without Docker:
 ```bash
-docker compose up pgadmin -d
+pip install -r requirements.txt
+STAYUP_API_URL=... STAYUP_API_KEY=... python latest_videos.py
 ```
-Open [http://localhost:5050](http://localhost:5050) — credentials: `admin@admin.com` / `admin`
-
-Connect to the server using host `db`, port `5432`, and the credentials from your `.env`.
 
 ## Automation
 
 The script runs automatically every evening at 20:00 UTC via GitHub Actions.
 
-To enable it on your fork, add a `DATABASE_URL` secret in:
+To enable it on your fork, add `STAYUP_API_URL` and `STAYUP_API_KEY` secrets in:
 **Settings → Secrets and variables → Actions → New repository secret**
 
 You can also trigger the workflow manually from the **Actions → Daily YouTube check → Run workflow** tab.
@@ -77,7 +62,7 @@ You can also trigger the workflow manually from the **Actions → Daily YouTube 
 cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 ```
 
-**Run tests:**
+**Run tests** (no external dependencies — `stayup-api` and yt-dlp calls are mocked):
 ```bash
 docker compose run --rm test
 ```
@@ -92,25 +77,9 @@ docker compose run --rm --entrypoint="" test sh -c "ruff check . && black --chec
 docker run --rm --entrypoint="" -v $(pwd):/app -w /app stayup-cmd-youtube-test black .
 ```
 
-## Database schema
+## What gets stored
 
-| Table | Description |
-|---|---|
-| `profile` | Tracked YouTube channels |
-| `connector_youtube` | Stored video entries (latest per channel) |
-
-### `connector_youtube` columns
-
-| Column | Description |
-|---|---|
-| `version` | YouTube video ID (e.g. `dQw4w9WgXcQ`) |
-| `content` | JSON with `title`, `thumbnail`, and `url` of the video |
-| `diff` | Not used — kept for schema consistency |
-| `datetime` | Video publication date |
-| `executed_at` | Timestamp when the script ran |
-| `success` | `false` if the fetch failed |
-
-### `content` JSON format
+Each stored entry is a JSON `content` blob, keyed by the YouTube video id (`version`):
 
 ```json
 {
@@ -120,16 +89,17 @@ docker run --rm --entrypoint="" -v $(pwd):/app -w /app stayup-cmd-youtube-test b
 }
 ```
 
+See `stayup-api`'s `connector-api` docs for the full contract.
+
 ## Project structure
 
 ```
 stayup-cmd-youtube/
-├── latest_videos.py        # Main script
+├── latest_videos.py    # Main script
 ├── tests/
-│   ├── test_unit.py        # Unit tests (no external dependencies)
-│   └── test_functional.py  # Functional tests (require PostgreSQL)
-├── .env.example            # Configuration template
+│   └── test_unit.py    # Tests — stayup-api and yt-dlp calls are mocked
+├── .env.example        # Configuration template
 ├── docker-compose.yml
 ├── Dockerfile
-└── pyproject.toml          # Ruff + Black configuration
+└── pyproject.toml      # Ruff + Black configuration
 ```
