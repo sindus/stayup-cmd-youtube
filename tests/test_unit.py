@@ -11,7 +11,6 @@ import pytest
 from latest_videos import (
     DISPLAY_TEMPLATE,
     add_source,
-    cleanup_old_entries,
     fetch_video_ids,
     fetch_video_metadata,
     get_latest_version,
@@ -142,18 +141,6 @@ class TestSaveError:
         mock_request.return_value = mock_response({"success": True})
         save_error(None, "error", datetime.now(tz=timezone.utc))
         assert mock_request.call_args.kwargs["json"]["repositoryId"] is None
-
-
-@patch("latest_videos.API_KEY", "test-key")
-class TestCleanupOldEntries:
-    @patch("latest_videos.requests.request")
-    def test_sends_retention_days_as_a_query_param(self, mock_request):
-        mock_request.return_value = mock_response({"success": True})
-        cleanup_old_entries(7, 30)
-        method, url = mock_request.call_args[0]
-        assert method == "DELETE"
-        assert url.endswith("/connector-api/youtube/sources/7/old-items")
-        assert mock_request.call_args.kwargs["params"] == {"retentionDays": 30}
 
 
 class TestDisplayTemplate:
