@@ -23,33 +23,33 @@ import yt_dlp
 
 PROVIDER_TYPE = "youtube"
 
-# Nom affiché du provider dans les apps (fallback : nom de table capitalisé).
+# Display name of the provider in the apps (fallback: capitalized table name).
 DISPLAY_NAME = "YouTube"
 
-# Où ce connecteur se classe parmi les autres dans la barre latérale.
+# Where this connector ranks among the others in the sidebar.
 SORT_ORDER = 20
 
-# Instance stayup-api à laquelle parler, et la clé qui authentifie ce
-# connecteur pour le provider 'youtube' — obtenue depuis l'admin de cette
-# instance (voir stayup-api/docs/self-hosting-and-providers.md).
+# The stayup-api instance to talk to, and the key that authenticates this
+# connector for the 'youtube' provider — obtained from that instance's admin
+# (see stayup-api/docs/self-hosting-and-providers.md).
 API_URL = os.environ.get("STAYUP_API_URL", "http://localhost:3000").rstrip("/")
 API_KEY = os.environ.get("STAYUP_API_KEY")
 
 DEFAULT_MAX_ITERATIONS = 5
 
-# Manifeste d'affichage : comment les 3 apps (ui / desktop / mobile) rendent les
-# lignes de ce connecteur, sans une ligne de code côté app. stayup-api le relaie
-# tel quel depuis provider_registry.template, sans jamais l'interpréter.
-# Schéma : voir stayup-api/docs/self-hosting-and-providers.md.
+# Display manifest: how the 3 apps (ui / desktop / mobile) render this
+# connector's rows, without a line of code on the app side. stayup-api relays it
+# as-is from provider_registry.template, without ever interpreting it.
+# Schema: see stayup-api/docs/self-hosting-and-providers.md.
 #
-# Une entrée = une vidéo. `content` est un JSON {title, thumbnail, url}, `url`
-# étant l'URL de la chaîne ; `version` est l'id de la vidéo, d'où l'URL
-# d'embed reconstruite dans `detail.embedUrl`.
+# One entry = a video. `content` is JSON {title, thumbnail, url}, `url` being
+# the channel URL; `version` is the video id, hence the embed URL rebuilt in
+# `detail.embedUrl`.
 DISPLAY_TEMPLATE = {
     "version": 1,
     "display": {
         "name": DISPLAY_NAME,
-        # Icône auto-descriptive (tracé SVG teintable). Écran + bouton lecture.
+        # Self-describing icon (tintable SVG path). Screen + play button.
         "icon": {
             "paths": [
                 "M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z",
@@ -122,7 +122,7 @@ def api_request(method: str, path: str, **kwargs) -> dict | None:
 
 
 def register_provider() -> None:
-    """Auto-déclaration au démarrage — nom affiché et manifeste d'affichage."""
+    """Self-declaration at startup — display name and display manifest."""
     api_request(
         "POST",
         "/register",
